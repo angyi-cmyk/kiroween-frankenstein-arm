@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RoboArm NL</title>
+<!--
+  RoboArm NL — Kiroween 2026 (Frankenstein track).
+  Single static page: type a plain-English grasping instruction, a simulated
+  4-DOF robot arm does it. Three.js r160 from the unpkg CDN via an import map.
+
+  Spec: .kiro/specs/robot-arm-nl-3d/{requirements,design,tasks}.md
+
+  Notes on two design.md prose points that conflict with the spec's own IK
+  math / reachability claim (kept verbatim; app built to satisfy the math,
+  which is the binding contract per the task):
+    1. Pitch joints rotate about LOCAL X, not "local Z". With base yaw about
+       world Y (rotation.y = J0), the reach direction is local +Z = u =
+       (sin J0,0,cos J0). To tilt the arm toward u for positive J1 (so the
+       scene-graph tip matches the FK formula within 1 mm), the pitch axis
+       must be local X. A Z-axis pitch would tilt the arm sideways (toward
+       local X) and never reach the objects. The IK math is unchanged.
+    2. Grasp tip height = 0.30 m, not the design's 0.24 ("object top + 0.02").
+       At 0.24, the green-cube and yellow-sphere grasps are infeasible for
+       EVERY gripPitch under the spec joint limits (by ~2-3 deg), contradicting
+       the design's own "all targets reachable" claim and the listed example
+       commands. 0.30 m makes all 5 objects reachable at the EXACT spec joint
+       limits. A literal "gripper straight down" grasp (phi = 180 deg) needs
+       J3 ~150-158 deg, exceeding the spec wrist limit (120 deg), so grasps
+       use a per-target feasible pitch (gripper down-and-slightly-forward).
+-->
+<style>
+  :root{
+    --bg:#0d1014; --panel:#14181f; --panel2:#1a1f28; --line:#262c38;
+    --text:#e6e8ec; --muted:#8b93a1; --accent:#5b9dff; --ok:#3ec472;
+    --warn:#e0a800; --err:#e0584b;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  header{
+    padding:10px 16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+  }
+  header h1{font-size:18px; margin:0; letter-spacing:.3px;}
+  header .sub{font-size:13px; color:var(--muted);}
+  header .en{font-size:12px; color:var(--muted); margin-left:auto;
+    border:1px solid var(--line); padding:2px 8px; border-radius:10px;}
+  #app{flex:1; display:flex; min-height:0;}
+  #panel{
+    width:320px; flex:0 0 320px; background:var(--panel);
+    border-right:1px solid var(--line); padding:14px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  #main{flex:1; display:flex; flex-direction:column; min-width:0;}
+  #viewport{flex:1; position:relative; min-height:0; background:#0a0c10;}
+  #viewport canvas{display:block; width:100%; height:100%;}
+  #readout{
+    border-top:1px solid var(--line); background:var(--panel);
+    padding:8px 12px; font-size:12px; display:flex; flex-wrap:wrap;
+    gap:6px 16px; font-variant-numeric:tabular-nums;
+  }
+  #readout .k{color:var(--muted);}
+  .row{display:flex; gap:8px;}
+  input#cmd{
+    flex:1; min-width:0; background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:14px;
+  }
+  input#cmd:focus{outline:none; border-color:var(--accent);}
+  button{
+    background:var(--accent); color:#0a0c10; border:none; border-radius:8px;
+    padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer;
+  }
+  button.ghost{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
+  button:hover{filter:brightness(1.07);}
+  button:disabled{opacity:.5; cursor:default;}
+  .chips{display:flex; flex-wrap:wrap; gap:6px;}
+  .chip{
+    background:var(--panel2); border:1px solid var(--line); color:var(--text);
+    border-radius:16px; padding:5px 10px; font-size:12px; cursor:pointer;
+  }
+  .chip:hover{border-color:var(--accent);}
+  .section{font-size:12px;}
+  .section h3{font-size:11px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--muted); margin:2px 0 6px; font-weight:600;}
+  .legend{display:flex; flex-direction:column; gap:5px;}
+  .legend .item{display:flex; align-items:center; gap:8px; font-size:12px;}
+  .dot{width:11px; height:11px; border-radius:3px; flex:0 0 11px;}
+  .dot.r{border-radius:50%;}
+  #status{font-size:13px; min-height:20px; padding:8px 10px; border-radius:8px;
+    background:var(--panel2); border:1px solid var(--line);}
+  #status.err{border-color:var(--err); color:var(--err);}
+  #status.busy{border-color:var(--accent);}
+  #selftest{font-size:11px; color:var(--muted); line-height:1.4;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    max-height:96px; overflow:auto;}
+  #selftest .ok{color:var(--ok);} #selftest .bad{color:var(--err);}
+  .btnrow{display:flex; gap:8px;}
+  .btnrow button{flex:1;}
+  .instr{font-size:12px; color:var(--muted); line-height:1.45;}
+  @media (max-width:760px){
+    #app{flex-direction:column;}
+    #panel{flex:none; width:100%; max-height:46vh; border-right:none;
+      border-bottom:1px solid var(--line);}
+    #main{flex:1;}
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<header>
+  <h1>RoboArm NL</h1>
+  <span class="sub">Type a sentence. Watch the arm do it.</span>
+  <span class="en">Commands are in English only</span>
+</header>
+<div id="app">
+  <div id="panel">
+    <div class="row">
+      <input id="cmd" type="text" placeholder="e.g. pick up the red cube and place it on the shelf" autocomplete="off" />
+      <button id="run">Run</button>
+    </div>
+    <div class="section">
+      <h3>Examples</h3>
+      <div class="chips" id="chips"></div>
+    </div>
+    <div class="section">
+      <h3>Objects</h3>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="section instr">
+      <h3>How to use</h3>
+      Orbit the camera by dragging, zoom with the wheel. Tell the arm what to
+      do in one sentence: pick up, grab, move, or place an object on the shelf
+      or table. Use a color + shape, e.g. <em>red cube</em>, <em>blue
+      cylinder</em>, <em>yellow sphere</em>. Say <em>reset</em> to park the arm.
+    </div>
+    <div class="btnrow">
+      <button class="ghost" id="stop">Stop</button>
+      <button class="ghost" id="reset">Reset</button>
+    </div>
+    <div id="status">Ready</div>
+    <div class="section">
+      <h3>Self-test</h3>
+      <div id="selftest">Running…</div>
+    </div>
+  </div>
+  <div id="main">
+    <div id="viewport"></div>
+    <div id="readout">
+      <span><span class="k">J0</span> <span id="rJ0">—</span>°</span>
+      <span><span class="k">J1</span> <span id="rJ1">—</span>°</span>
+      <span><span class="k">J2</span> <span id="rJ2">—</span>°</span>
+      <span><span class="k">J3</span> <span id="rJ3">—</span>°</span>
+      <span><span class="k">EE</span> <span id="rEE">—</span> m</span>
+      <span><span class="k">gripper</span> <span id="rGrip">—</span></span>
+      <span><span class="k">held</span> <span id="rHeld">—</span></span>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================= Constants
+   Spec-exact: link lengths, shoulder position, joint limits, home pose. */
+const L1 = 0.75, L2 = 0.65, L3 = 0.25;
+const S = { x:0, y:0.18, z:-0.75 };           // shoulder pivot (world)
+const DEG = Math.PI/180, RAD = 180/Math.PI;
+const LIMITS = {
+  J0:[-170,170], J1:[-10,120], J2:[-150,0], J3:[-120,120]
+};
+const HOME = [0*DEG, 35*DEG, -70*DEG, 35*DEG]; // J0..J3 radians
+// Grasp tip height: 0.30 (see file header note #2). Object half-height 0.11,
+// so the object centre is 0.19 below the gripper tip (palm) when pointing down.
+const GRASP_TIP_Y = 0.30;
+const FINGER_REACH = GRASP_TIP_Y - 0.11;       // 0.19 m along gripper axis
+const SAFE_HEIGHT = 0.55;
+
+/* ============================================================= Objects */
+const OBJECTS = [
+  { id:'red-cube',        label:'red cube',        shape:'cube',     color:'#d23b2e', x:0.55,  z:0.15,  half:0.11 },
+  { id:'blue-cylinder',   label:'blue cylinder',  shape:'cylinder', color:'#2e6fd2', x:-0.45, z:0.35,  half:0.11, h:0.22, r:0.11 },
+  { id:'green-cube',      label:'green cube',      shape:'cube',     color:'#2ea44f', x:-0.75, z:-0.15, half:0.11 },
+  { id:'yellow-sphere',   label:'yellow sphere',  shape:'sphere',   color:'#f0bc00', x:0.85,  z:-0.35, half:0.11, r:0.11 },
+  { id:'orange-cylinder', label:'orange cylinder',shape:'cylinder',color:'#e87c00', x:0.10,  z:0.60,  half:0.11, h:0.22, r:0.11 }
+];
+const SHELF = { x:0.90, z:0.30, top:0.45, label:'the shelf', restY:0.56 }; // restY = top + half
+const TABLE_REST_Y = 0.11; // table top(0) + object half-height
+
+/* ============================================================= Renderer / scene */
+const viewport = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setClearColor(0x0a0c10, 1);
+viewport.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c10);
+
+const camera = new THREE.PerspectiveCamera(42, 1, 0.05, 100);
+// Camera from the front-left: from x<0, the red cube (x=0.55) is in front of
+// the shelf (x=0.90). The arm is at the back-centre. Yellow sphere (x=0.85, z=-0.35)
+// is visible to the right of the arm from this angle.
+camera.position.set(-2.8, 2.8, 3.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.2, 0.15, -0.1);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 1.1;
+controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI*0.495;
+controls.update();
+
+// Lights: hemisphere + directional (with shadows). No fog.
+scene.add(new THREE.HemisphereLight(0xcfd6e6, 0x20242c, 0.80));
+const dir = new THREE.DirectionalLight(0xffffff, 1.3);
+dir.position.set(2.4, 4.2, 2.0);
+dir.castShadow = true;
+dir.shadow.mapSize.set(2048, 2048);
+dir.shadow.camera.near = 0.5; dir.shadow.camera.far = 14;
+dir.shadow.camera.left = -3.2; dir.shadow.camera.right = 3.2;
+dir.shadow.camera.top = 3.2; dir.shadow.camera.bottom = -3.2;
+dir.shadow.bias = -0.0004;
+scene.add(dir);
+// Fill light from the front-right to illuminate back-right table objects
+const fill = new THREE.DirectionalLight(0xd0e0ff, 0.5);
+fill.position.set(3.0, 2.0, 3.0);
+scene.add(fill);
+
+/* ============================================================= Scene geometry */
+// Floor grid around the table.
+const grid = new THREE.GridHelper(8, 32, 0x2b3240, 0x1b2029);
+grid.position.y = -0.119; // floor level = table bottom (table is 0.12 thick, top at y=0)
+scene.add(grid);
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(8,8),
+  new THREE.MeshStandardMaterial({ color:0x0e1217, roughness:0.95, metalness:0.0 })
+);
+floor.rotation.x = -Math.PI/2; floor.position.y = -0.12; floor.receiveShadow = true;
+scene.add(floor);
+
+// Table: 3.4 x 0.12 x 2.2, top at y=0, centred at origin.
+const table = new THREE.Mesh(
+  new THREE.BoxGeometry(3.4, 0.12, 2.2),
+  new THREE.MeshStandardMaterial({ color:0x3a3f4a, roughness:0.8, metalness:0.05 })
+);
+table.position.set(0, -0.06, 0);
+table.castShadow = true; table.receiveShadow = true;
+scene.add(table);
+// lighter table top trim
+const tableTop = new THREE.Mesh(
+  new THREE.BoxGeometry(3.4, 0.02, 2.2),
+  new THREE.MeshStandardMaterial({ color:0x474d59, roughness:0.7 })
+);
+tableTop.position.set(0, 0.005, 0); tableTop.receiveShadow = true;
+scene.add(tableTop);
+
+// Shelf: raised platform, top surface at y=0.45, footprint 0.70 x 0.45 at (0.90,0,0.30).
+const shelfBox = new THREE.Mesh(
+  new THREE.BoxGeometry(0.70, 0.45, 0.45),
+  new THREE.MeshStandardMaterial({ color:0x6b5433, roughness:0.8, metalness:0.0,
+    emissive: new THREE.Color(0x3a2d1a) })
+);
+shelfBox.position.set(0.90, 0.225, 0.30);
+shelfBox.castShadow = true; shelfBox.receiveShadow = true;
+scene.add(shelfBox);
+const shelfTop = new THREE.Mesh(
+  new THREE.BoxGeometry(0.70, 0.02, 0.45),
+  new THREE.MeshStandardMaterial({ color:0x7a6244, roughness:0.65, metalness:0.0,
+    emissive: new THREE.Color(0x3a2d1a) })
+);
+shelfTop.position.set(0.90, 0.46, 0.30); shelfTop.receiveShadow = true;
+scene.add(shelfTop);
+// Shelf label: small floating sprite above the shelf
+const shelfLabel = makeLabel('shelf');
+shelfLabel.position.set(0.90, 0.60, 0.30);
+shelfLabel.scale.set(0.5, 0.13, 1);
+scene.add(shelfLabel);
+
+// Arm base pedestal (fixed; does not yaw): base plate + column up to shoulder.
+const basePlate = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.16, 0.16, 0.03, 32),
+  new THREE.MeshStandardMaterial({ color:0x6b7280, roughness:0.5, metalness:0.4 })
+);
+basePlate.position.set(0, 0.015, -0.75);
+basePlate.castShadow = true; basePlate.receiveShadow = true;
+scene.add(basePlate);
+const column = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.055, 0.07, 0.18, 24),
+  new THREE.MeshStandardMaterial({ color:0x9aa3b2, roughness:0.4, metalness:0.5 })
+);
+column.position.set(0, 0.12, -0.75);
+column.castShadow = true; column.receiveShadow = true;
+scene.add(column);
+
+/* ============================================================= Arm hierarchy
+   baseGroup (pos 0,0,-0.75; rotation.y = J0)
+     shoulderGroup (pos 0,0.18,0; rotation.x = J1)   [pitch about LOCAL X, see note #1]
+       upperArm mesh (box 0.13x0.75x0.13, centred y=+0.375)
+       elbowGroup (pos 0,0.75,0; rotation.x = J2)
+         forearm mesh (box 0.11x0.65x0.11, centred y=+0.325)
+         wristGroup (pos 0,0.65,0; rotation.x = J3)
+           wrist mesh + gripperGroup (pos 0,0.25,0)
+             fingerL / fingerR (translate +/-x to open/close) */
+const armMat = new THREE.MeshStandardMaterial({ color:0xbfc6d2, roughness:0.5, metalness:0.35 });
+const armMat2 = new THREE.MeshStandardMaterial({ color:0x6b7a8e, roughness:0.55, metalness:0.3 });
+
+const baseGroup = new THREE.Group(); baseGroup.position.set(0,0,-0.75); scene.add(baseGroup);
+const shoulderGroup = new THREE.Group(); shoulderGroup.position.set(0,0.18,0); baseGroup.add(shoulderGroup);
+const upperArm = new THREE.Mesh(new THREE.BoxGeometry(0.13,0.75,0.13), armMat);
+upperArm.position.set(0,0.375,0); upperArm.castShadow = true; shoulderGroup.add(upperArm);
+const shoulderHub = new THREE.Mesh(new THREE.CylinderGeometry(0.085,0.085,0.16,24), armMat2);
+shoulderHub.rotation.z = Math.PI/2;  // hub cylinder axis along world X (joint axis)
+shoulderGroup.add(shoulderHub);
+
+const elbowGroup = new THREE.Group(); elbowGroup.position.set(0,0.75,0); shoulderGroup.add(elbowGroup);
+const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.11,0.65,0.11), armMat);
+forearm.position.set(0,0.325,0); forearm.castShadow = true; elbowGroup.add(forearm);
+const elbowHub = new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.075,0.14,24), armMat2);
+elbowHub.rotation.z = Math.PI/2;  // hub cylinder axis along world X (joint axis)
+elbowGroup.add(elbowHub);
+
+const wristGroup = new THREE.Group(); wristGroup.position.set(0,0.65,0); elbowGroup.add(wristGroup);
+const wristMesh = new THREE.Mesh(new THREE.BoxGeometry(0.10,0.10,0.10), armMat2);
+wristMesh.position.set(0,0.05,0); wristMesh.castShadow = true; wristGroup.add(wristMesh);
+
+const gripperGroup = new THREE.Group(); gripperGroup.position.set(0,0.25,0); wristGroup.add(gripperGroup);
+const palm = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.08,0.12), armMat2);
+palm.position.set(0,0.0,0); palm.castShadow = true; gripperGroup.add(palm);
+// fingers extend along +Y (gripper axis / grasp direction); open/close by translating +/-x
+const fingerMat = new THREE.MeshStandardMaterial({ color:0x6b7280, roughness:0.4, metalness:0.5 });
+const fingerGeo = new THREE.BoxGeometry(0.025, 0.20, 0.10);
+const fingerL = new THREE.Mesh(fingerGeo, fingerMat); fingerL.position.set(-0.12, 0.14, 0); fingerL.castShadow = true; gripperGroup.add(fingerL);
+const fingerR = new THREE.Mesh(fingerGeo, fingerMat); fingerR.position.set( 0.12, 0.14, 0); fingerR.castShadow = true; gripperGroup.add(fingerR);
+const FINGER_OPEN = 0.135, FINGER_CLOSED = 0.045; // half-separation from centre
+
+function applyJoints(j){
+  baseGroup.rotation.y = j[0];
+  shoulderGroup.rotation.x = j[1];
+  elbowGroup.rotation.x = j[2];
+  wristGroup.rotation.x = j[3];
+}
+function applyGripper(openAmt){ // 0 closed .. 1 open
+  const sep = FINGER_CLOSED + (FINGER_OPEN-FINGER_CLOSED)*openAmt;
+  fingerL.position.x = -sep; fingerR.position.x = sep;
+}
+
+/* ============================================================= Forward kinematics (pure) */
+function forwardKinematics(j){
+  const J0=j[0], a1=j[1], a2=j[2], a3=j[3];
+  const inx = L1*Math.sin(a1) + L2*Math.sin(a1+a2) + L3*Math.sin(a1+a2+a3);
+  const iny = L1*Math.cos(a1) + L2*Math.cos(a1+a2) + L3*Math.cos(a1+a2+a3);
+  const ux = Math.sin(J0), uz = Math.cos(J0);
+  const tip = { x: S.x + inx*ux, y: S.y + iny, z: S.z + inx*uz };
+  const dir = { x: Math.sin(a1+a2+a3)*ux, y: Math.cos(a1+a2+a3), z: Math.sin(a1+a2+a3)*uz };
+  return { tip, dir };
+}
+
+/* ============================================================= Inverse kinematics (analytic) */
+// Returns {joints:[J0..J3] rad} or null if unreachable/out of limits.
+function inverseKinematics(P, phi){
+  const dx = P.x - S.x, dz = P.z - S.z;
+  const r = Math.hypot(dx, dz);
+  let J0 = (r < 0.05) ? 0 : Math.atan2(dx, dz);
+  if (Math.abs(J0*RAD) > LIMITS.J0[1] + 0.5) return null;
+  const sp = Math.sin(phi), cp = Math.cos(phi);
+  // wrist centre = tip - L3*g, with g=(sin phi, cos phi) in plane
+  const rw = r - L3*sp;
+  const yw = (P.y - S.y) - L3*cp;
+  if (Math.hypot(rw, yw) > L1 + L2 - 0.001) return null;
+  let D = (rw*rw + yw*yw - L1*L1 - L2*L2) / (2*L1*L2);
+  if (D > 1) D = 1; if (D < -1) D = -1;
+  const J2 = -Math.acos(D);                       // elbow-up
+  const J1 = Math.atan2(rw, yw) - Math.atan2(L2*Math.sin(J2), L1 + L2*Math.cos(J2));
+  const J3 = phi - J1 - J2;
+  const deg = { J0: J0*RAD, J1: J1*RAD, J2: J2*RAD, J3: J3*RAD };
+  for (const k in LIMITS){ if (deg[k] < LIMITS[k][0]-0.5 || deg[k] > LIMITS[k][1]+0.5) return null; }
+  return { joints:[J0, J1, J2, J3] };
+}
+// Search a downward-ish pitch for a feasible IK solution (closest to straight-down).
+function ikFeasible(P){
+  let best = null, bestDist = Infinity;
+  for (let ph = 180; ph >= -90; ph -= 2){
+    const sol = inverseKinematics(P, ph*DEG);
+    if (sol){
+      const d = Math.abs(ph - 180);
+      if (d < bestDist){ bestDist = d; best = { joints: sol.joints, phi: ph*DEG }; }
+    }
+  }
+  return best;
+}
+
+/* ============================================================= Object meshes + labels */
+function makeLabel(text){
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(13,16,20,0.78)'; roundRect(g, 2,12,252,40,10); g.fill();
+  g.fillStyle = '#e6e8ec'; g.font = '600 26px system-ui, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 128, 34);
+  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 2;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map:tex, transparent:true, depthTest:false }));
+  spr.scale.set(0.5, 0.13, 1); spr.renderOrder = 10;
+  return spr;
+}
+function roundRect(g,x,y,w,h,r){ g.beginPath(); g.moveTo(x+r,y); g.arcTo(x+w,y,x+w,y+h,r); g.arcTo(x+w,y+h,x,y+h,r); g.arcTo(x,y+h,x,y,r); g.arcTo(x,y,x+w,y,r); g.closePath(); }
+
+const objMeshes = {};
+OBJECTS.forEach(o=>{
+  let geo;
+  if (o.shape==='cube') geo = new THREE.BoxGeometry(o.half*2, o.half*2, o.half*2);
+  else if (o.shape==='cylinder') geo = new THREE.CylinderGeometry(o.r, o.r, o.h, 28);
+  else geo = new THREE.SphereGeometry(o.r, 28, 18);
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(o.color),
+    roughness: 0.45, metalness: 0.05,
+    emissive: new THREE.Color(o.color).multiplyScalar(0.22)
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(o.x, o.half, o.z);
+  m.castShadow = true; m.receiveShadow = true;
+  scene.add(m);
+  const lab = makeLabel(o.label);
+  lab.position.set(0, o.half + 0.16, 0);
+  m.add(lab);
+  o.mesh = m; o.homeX = o.x; o.homeZ = o.z;
+  objMeshes[o.id] = m;
+});
+
+/* ============================================================= NL parser */
+const COLORS = ['red','blue','green','yellow','orange'];
+const SHAPE_MAP = { cube:'cube', box:'cube', block:'cube', cylinder:'cylinder', sphere:'sphere', ball:'sphere' };
+const TARGETS = { shelf:'shelf', table:'table' };
+
+function findObject(colorWord, shapeWord){
+  const shape = SHAPE_MAP[(shapeWord||'').toLowerCase()];
+  if (!shape) return null;
+  const cl = (colorWord||'').toLowerCase();
+  if (!COLORS.includes(cl)) return null;
+  return OBJECTS.find(o=>o.shape===shape && o.id.startsWith(cl+'-')) || null;
+}
+function targetWord(w){ return TARGETS[(w||'').toLowerCase()] || null; }
+function parseError(understood){
+  const shapes = 'cube/box/block, cylinder, sphere/ball';
+  const colors = 'red, blue, green, yellow, orange';
+  let msg = "I didn't understand that command.";
+  if (understood) msg += ' I understood: ' + understood + '.';
+  msg += ` Try "pick up the red cube and place it on the shelf". Shapes I know: ${shapes}. Colors: ${colors}. Targets: shelf, table.`;
+  return { action:'error', message: msg };
+}
+
+// state.held and state.lastMentioned used for pronoun resolution ("it")
+function parseCommand(text, state){
+  let s = (text||'').toLowerCase().trim().replace(/[.!?,;:]+$/,'').replace(/\s+/g,' ');
+  if (!s) return parseError(null);
+  let m;
+  // (4) reset / home
+  if (/^(reset|home|go home)$/.test(s)) return { action:'reset' };
+  // (3) place/put it on/onto [the] target
+  m = s.match(/^(place|put) it (on|onto)( the)? (\w+)$/);
+  if (m){
+    const tgt = targetWord(m[4]);
+    if (!tgt) return parseError(`place "it" on "${m[4]}" (unknown target)`);
+    const obj = state.held || state.lastMentioned;
+    if (!obj) return { action:'error', message:'Nothing is held to place. Pick something up first.' };
+    return { action:'place', object:obj, target:tgt };
+  }
+  // (2) place/put/move the COLOR SHAPE on/onto/to [the] target
+  m = s.match(/^(place|put|move) the (\w+) (\w+) (on|onto|to)( the)? (\w+)$/);
+  if (m){
+    const obj = findObject(m[2], m[3]);
+    const tgt = targetWord(m[6]);
+    if (!obj && !tgt) return parseError(`move "${m[2]} ${m[3]}" to "${m[6]}" (unknown object and target)`);
+    if (!obj) return parseError(`move to "${m[6]}" (unknown object "${m[2]} ${m[3]}")`);
+    if (!tgt) return parseError(`move the ${obj.label} to "${m[6]}" (unknown target)`);
+    return { action:'pickplace', object:obj, target:tgt };
+  }
+  // (1) pick up/grab/take/lift/get the COLOR SHAPE [ and place/put it on the TARGET ]
+  m = s.match(/^(pick up|grab|take|lift|get) the (\w+) (\w+)( and (place|put) it on the (\w+))?$/);
+  if (m){
+    const obj = findObject(m[2], m[3]);
+    if (!obj) return parseError(`pick up "${m[2]} ${m[3]}" (unknown object)`);
+    if (m[6]){
+      const tgt = targetWord(m[6]);
+      if (!tgt) return parseError(`place on "${m[6]}" (unknown target)`);
+      return { action:'pickplace', object:obj, target:tgt };
+    }
+    return { action:'pick', object:obj };
+  }
+  return parseError(null);
+}
+
+/* ============================================================= Sequencer */
+const state = {
+  joints: HOME.slice(),
+  gripperOpen: 1,        // 1 = open
+  held: null,            // object currently held
+  lastMentioned: null,
+};
+let commandQueue = [];
+let currentSteps = [];
+let stepIdx = 0, stepTime = 0;
+let fromJoints = HOME.slice(), fromGrip = 1;
+let running = false;
+
+const statusEl = document.getElementById('status');
+function setStatus(msg, kind){
+  statusEl.textContent = msg;
+  statusEl.className = kind || '';
+  if (kind==='busy' || running) statusEl.classList.add('busy');
+}
+
+function smooth(t){ return t*t*(3-2*t); }
+function moveDur(from, to){
+  let maxD = 0;
+  for (let i=0;i<4;i++) maxD = Math.max(maxD, Math.abs(to[i]-from[i]));
+  return Math.min(1.6, Math.max(0.5, 0.5 + (maxD/Math.PI)*1.1));
+}
+function gripVal(open){ return open ? 1 : 0; } // 1 open, 0 closed
+
+function graspObject(o){
+  // parent the object to the gripper, preserving world transform
+  gripperGroup.attach(o.mesh);
+  state.held = o;
+}
+function releaseObjectTo(target){
+  // detach to scene (preserve world transform) then snap onto target surface
+  const o = state.held;
+  if (!o) return;
+  scene.attach(o.mesh);
+  let restY, rx, rz;
+  if (target.kind==='shelf'){ restY = SHELF.restY; rx = SHELF.x; rz = SHELF.z; }
+  else { restY = TABLE_REST_Y; rx = o.homeX; rz = o.homeZ; }
+  o.mesh.position.set(rx, restY, rz);
+  o.mesh.rotation.set(0,0,0);
+  o.x = rx; o.z = rz; // update live position for re-parsing / reach
+}
+function releaseInPlace(){
+  const o = state.held; if (!o) return;
+  scene.attach(o.mesh); // stays where it was (in place)
+  o.x = o.mesh.position.x; o.z = o.mesh.position.z;
+}
+
+function buildStepsFor(cmd){
+  if (cmd.action==='reset'){
+    const step = { joints:HOME.slice(), gripper:'open', duration:moveDur(state.joints, HOME), label:'Going home',
+      onDone: ()=>{ if (state.held){ releaseInPlace(); state.held = null; } state.lastMentioned = null; } };
+    return [step];
+  }
+  if (cmd.action==='pick'){
+    return buildPickSteps(cmd.object);
+  }
+  if (cmd.action==='place'){
+    if (!state.held && !cmd.object) return null;
+    const o = cmd.object || state.held;
+    return buildPlaceSteps(o, cmd.target);
+  }
+  if (cmd.action==='pickplace'){
+    const pick = buildPickSteps(cmd.object);
+    if (!pick) return null;
+    // place uses the same object; build place steps relative to end of pick
+    const place = buildPlaceSteps(cmd.object, cmd.target);
+    if (!place) return null;
+    return pick.concat(place);
+  }
+  return null;
+}
+
+function buildPickSteps(o){
+  const gY = GRASP_TIP_Y;
+  const app = ikFeasible({x:o.x, y:gY+0.28, z:o.z});
+  const desc = ikFeasible({x:o.x, y:gY, z:o.z});
+  const lift = ikFeasible({x:o.x, y:gY+0.30, z:o.z});
+  if (!app || !desc || !lift) return null;
+  return [
+    { joints:app.joints, gripper:'open', duration:moveDur(state.joints, app.joints),
+      label:`Moving to ${o.label}`, onDone:()=>{ state.lastMentioned = o; } },
+    { joints:desc.joints, gripper:'open', duration:moveDur(app.joints, desc.joints),
+      label:`Descending to ${o.label}` },
+    { joints:desc.joints, gripper:'closed', duration:0.4,
+      label:`Grasping ${o.label}`, onDone:()=>{ graspObject(o); } },
+    { joints:lift.joints, gripper:'closed', duration:moveDur(desc.joints, lift.joints),
+      label:`Lifting ${o.label}` }
+  ];
+}
+
+function buildPlaceSteps(o, targetName){
+  const target = (targetName==='shelf')
+    ? { kind:'shelf', x:SHELF.x, z:SHELF.z, label:SHELF.label, restY:SHELF.restY }
+    : { kind:'table', x:o.homeX, z:o.homeZ, label:'the table', restY:TABLE_REST_Y };
+  const placeTipY = target.restY + FINGER_REACH; // gripper tip (palm) above object centre
+  const trans = ikFeasible({x:target.x, y:SAFE_HEIGHT, z:target.z});
+  const desc = ikFeasible({x:target.x, y:placeTipY, z:target.z});
+  const ret = ikFeasible({x:target.x, y:placeTipY+0.30, z:target.z});
+  if (!trans || !desc || !ret) return null;
+  return [
+    { joints:trans.joints, gripper:'closed', duration:moveDur(state.joints, trans.joints),
+      label:`Moving to ${target.label}` },
+    { joints:desc.joints, gripper:'closed', duration:moveDur(trans.joints, desc.joints),
+      label:`Placing on ${target.label}` },
+    { joints:desc.joints, gripper:'open', duration:0.4,
+      label:`Releasing on ${target.label}`, onDone:()=>{ releaseObjectTo(target); state.held = null; } },
+    { joints:ret.joints, gripper:'open', duration:moveDur(desc.joints, ret.joints),
+      label:`Retreating from ${target.label}` }
+  ];
+}
+
+function startCommand(cmd){
+  const steps = buildStepsFor(cmd);
+  if (!steps){
+    setStatus(`Unreachable: can't plan that motion. The target is outside the arm's reach or joint limits.`, 'err');
+    tryNext();
+    return;
+  }
+  currentSteps = steps; stepIdx = 0; stepTime = 0;
+  fromJoints = state.joints.slice(); fromGrip = gripVal(state.gripperOpen>=0.5);
+  running = true;
+  setStatus(currentSteps[0].label, 'busy');
+}
+function tryNext(){
+  if (running) return;
+  if (commandQueue.length === 0){ return; }
+  const cmd = commandQueue.shift();
+  if (cmd.action==='error'){ setStatus(cmd.message,'err'); tryNext(); return; }
+  startCommand(cmd);
+}
+function enqueueCommand(cmd){
+  commandQueue.push(cmd);
+  tryNext();
+}
+
+function stopMotion(){
+  commandQueue = [];
+  currentSteps = []; stepIdx = 0; running = false;
+  setStatus('Stopped', 'err');
+}
+function resetArm(){
+  commandQueue = [];
+  currentSteps = []; stepIdx = 0; running = false;
+  // home + release in place
+  if (state.held){ releaseInPlace(); state.held = null; }
+  state.joints = HOME.slice(); state.gripperOpen = 1;
+  applyJoints(state.joints); applyGripper(1);
+  setStatus('Reset to home');
+}
+
+/* ============================================================= UI wiring */
+const cmdInput = document.getElementById('cmd');
+document.getElementById('run').addEventListener('click', runFromInput);
+cmdInput.addEventListener('keydown', e=>{ if (e.key==='Enter') runFromInput(); });
+const CHIPS = [
+  'Pick up the red cube and place it on the shelf',
+  'Grab the blue cylinder',
+  'Move the green cube to the table',
+  'Place it on the shelf'
+];
+const chipsEl = document.getElementById('chips');
+CHIPS.forEach(text=>{
+  const b = document.createElement('div'); b.className='chip'; b.textContent=text;
+  b.addEventListener('click', ()=>{ cmdInput.value=text; runCommand(text); });
+  chipsEl.appendChild(b);
+});
+const legendEl = document.getElementById('legend');
+OBJECTS.forEach(o=>{
+  const row = document.createElement('div'); row.className='item';
+  const d = document.createElement('div'); d.className='dot' + (o.shape==='sphere'||o.shape==='cylinder'?' r':'');
+  d.style.background = o.color;
+  const t = document.createElement('span'); t.textContent = o.label;
+  row.appendChild(d); row.appendChild(t); legendEl.appendChild(row);
+});
+document.getElementById('stop').addEventListener('click', stopMotion);
+document.getElementById('reset').addEventListener('click', resetArm);
+
+function runFromInput(){ const t = cmdInput.value.trim(); if (t) runCommand(t); }
+function runCommand(text){
+  const cmd = parseCommand(text, state);
+  if (cmd.action==='error'){ setStatus(cmd.message, 'err'); return; }
+  setStatus('Queued: ' + text, 'busy');
+  enqueueCommand(cmd);
+}
+
+/* ============================================================= Readouts */
+const rJ0=document.getElementById('rJ0'),rJ1=document.getElementById('rJ1'),
+      rJ2=document.getElementById('rJ2'),rJ3=document.getElementById('rJ3'),
+      rEE=document.getElementById('rEE'),rGrip=document.getElementById('rGrip'),
+      rHeld=document.getElementById('rHeld');
+function updateReadouts(){
+  const f = forwardKinematics(state.joints);
+  rJ0.textContent = (state.joints[0]*RAD).toFixed(1);
+  rJ1.textContent = (state.joints[1]*RAD).toFixed(1);
+  rJ2.textContent = (state.joints[2]*RAD).toFixed(1);
+  rJ3.textContent = (state.joints[3]*RAD).toFixed(1);
+  rEE.textContent = `(${f.tip.x.toFixed(2)}, ${f.tip.y.toFixed(2)}, ${f.tip.z.toFixed(2)})`;
+  rGrip.textContent = state.gripperOpen>0.5 ? 'open' : 'closed';
+  rHeld.textContent = state.held ? state.held.label : '—';
+}
+
+/* ============================================================= Self-test */
+const selfTestEl = document.getElementById('selftest');
+const selfTestLog = [];
+function st(name, pass, detail){
+  selfTestLog.push({name, pass, detail});
+  const cls = pass?'ok':'bad';
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = (pass?'✓ ':'✗ ')+name+(detail?(' — '+detail):'');
+  selfTestEl.appendChild(line);
+}
+function within(a,b,mm){ return Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z) <= mm/1000; }
+
+function runSelfTest(){
+  selfTestEl.textContent='';
+  let allPass = true;
+
+  // 1) FK vs scene graph (<=1mm): drive scene graph to home, compare to FK.
+  applyJoints(HOME); applyGripper(1);
+  renderer.render(scene, camera);
+  const worldTip = new THREE.Vector3();
+  gripperGroup.getWorldPosition(worldTip);
+  const fkHome = forwardKinematics(HOME).tip;
+  const fkErr = Math.hypot(worldTip.x-fkHome.x, worldTip.y-fkHome.y, worldTip.z-fkHome.z);
+  const fkOk = fkErr <= 0.001 + 1e-6;
+  st('FK matches scene graph (<=1mm)', fkOk, `err=${(fkErr*1000).toFixed(2)}mm`);
+  if(!fkOk) allPass=false;
+  // also check at a second pose for robustness
+  const p2 = [10*DEG, 60*DEG, -100*DEG, 30*DEG];
+  applyJoints(p2); renderer.render(scene,camera);
+  gripperGroup.getWorldPosition(worldTip);
+  const fk2 = forwardKinematics(p2).tip;
+  const e2 = Math.hypot(worldTip.x-fk2.x,worldTip.y-fk2.y,worldTip.z-fk2.z);
+  const fk2Ok = e2 <= 0.001+1e-6;
+  st('FK matches scene graph (2nd pose, <=1mm)', fk2Ok, `err=${(e2*1000).toFixed(2)}mm`);
+  if(!fk2Ok) allPass=false;
+
+  // 2) IK round-trip (<=5mm) for all 5 object grasp points + shelf drop point.
+  const targets = OBJECTS.map(o=>({name:o.label, P:{x:o.x,y:GRASP_TIP_Y,z:o.z}}));
+  targets.push({name:'shelf drop point', P:{x:SHELF.x,y:SHELF.restY,z:SHELF.z}});
+  targets.forEach(t=>{
+    const sol = ikFeasible(t.P);
+    if (!sol){ st(`IK reachable: ${t.name}`, false, 'no feasible solution'); allPass=false; return; }
+    const fk = forwardKinematics(sol.joints).tip;
+    const err = Math.hypot(fk.x-t.P.x, fk.y-t.P.y, fk.z-t.P.z);
+    const ok = err <= 0.005 + 1e-6;
+    st(`IK round-trip: ${t.name} (<=5mm)`, ok, `err=${(err*1000).toFixed(2)}mm @phi=${(sol.phi*RAD).toFixed(0)}°`);
+    if(!ok) allPass=false;
+  });
+
+  // 3) Parser cases: every grammar form + one bad input.
+  const stState = { held: OBJECTS[0], lastMentioned: OBJECTS[0] }; // pretend red cube held
+  const cases = [
+    ['pick up the red cube and place it on the shelf', {action:'pickplace', object:'red-cube', target:'shelf'}],
+    ['Grab the blue cylinder', {action:'pick', object:'blue-cylinder'}],
+    ['Move the green cube to the table', {action:'pickplace', object:'green-cube', target:'table'}],
+    ['Place it on the shelf', {action:'place', object:'red-cube', target:'shelf'}],
+    ['reset', {action:'reset'}],
+    ['home', {action:'reset'}],
+    ['take the yellow sphere', {action:'pick', object:'yellow-sphere'}],
+    ['put the orange cylinder on the table', {action:'pickplace', object:'orange-cylinder', target:'table'}],
+    ['pick up the purple banana', {action:'error'}],
+    ['fly to the moon', {action:'error'}]
+  ];
+  cases.forEach(([input, exp])=>{
+    const cmd = parseCommand(input, stState);
+    let ok = (cmd.action===exp.action);
+    if (ok && exp.object && (!cmd.object || cmd.object.id!==exp.object)) ok=false;
+    if (ok && exp.target && cmd.target!==exp.target) ok=false;
+    const detail = ok ? '' : ('got '+JSON.stringify({action:cmd.action,object:cmd.object&&cmd.object.id,target:cmd.target}));
+    st(`parse: "${input}"`, ok, detail);
+    if(!ok) allPass=false;
+  });
+
+  // restore home
+  applyJoints(HOME); applyGripper(1);
+  state.joints = HOME.slice(); state.gripperOpen = 1;
+
+  const line = document.createElement('div');
+  line.className = allPass?'ok':'bad';
+  line.textContent = allPass ? 'ALL SELF-TESTS PASSED' : 'SELF-TEST FAILED — see red lines';
+  selfTestEl.appendChild(line);
+  console.log('[RoboArm] self-test', allPass?'PASSED':'FAILED', selfTestLog);
+  window.__selfTest = { pass: allPass, log: selfTestLog };
+  return allPass;
+}
+
+/* ============================================================= Animation loop */
+let last = performance.now();
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt = Math.min(0.05, (now-last)/1000); last = now;
+  controls.update();
+
+  if (running && stepIdx < currentSteps.length){
+    const step = currentSteps[stepIdx];
+    stepTime += dt;
+    const t = step.duration>0 ? Math.min(1, stepTime/step.duration) : 1;
+    const e = smooth(t);
+    for (let i=0;i<4;i++) state.joints[i] = fromJoints[i] + (step.joints[i]-fromJoints[i])*e;
+    state.gripperOpen = fromGrip + (gripVal(step.gripper==='open') - fromGrip)*e;
+    applyJoints(state.joints); applyGripper(state.gripperOpen);
+    if (t >= 1){
+      if (step.onDone) step.onDone();
+      stepIdx++; stepTime = 0;
+      if (stepIdx < currentSteps.length){
+        fromJoints = state.joints.slice(); fromGrip = gripVal(state.gripperOpen>=0.5);
+        setStatus(currentSteps[stepIdx].label, 'busy');
+      } else {
+        running = false;
+        setStatus('Ready');
+        tryNext();
+      }
+    }
+  }
+  updateReadouts();
+  renderer.render(scene, camera);
+}
+
+function onResize(){
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+  renderer.setSize(w, h, false);
+}
+window.addEventListener('resize', onResize);
+
+/* ============================================================= Init */
+applyJoints(HOME); applyGripper(1);
+onResize();
+runSelfTest();
+requestAnimationFrame(tick);
+
+/* ============================================================= Public API (for headless verification) */
+window.RoboArm = {
+  runCommand,
+  stop: stopMotion,
+  reset: resetArm,
+  getState: ()=>({
+    joints: state.joints.slice(),
+    jointsDeg: state.joints.map(j=>j*RAD),
+    fk: forwardKinematics(state.joints).tip,
+    gripper: state.gripperOpen>0.5?'open':'closed',
+    held: state.held ? state.held.id : null,
+    running, queueLen: commandQueue.length, stepsLeft: Math.max(0,currentSteps.length-stepIdx)
+  }),
+  getObjectPos: (id)=>{ const m = objMeshes[id]; const p = new THREE.Vector3(); m.getWorldPosition(p); return {x:p.x,y:p.y,z:p.z}; },
+  objects: OBJECTS.map(o=>o.id),
+  selfTest: ()=>window.__selfTest
+};
+console.log('[RoboArm] ready');
+</script>
+</body>
+</html>
