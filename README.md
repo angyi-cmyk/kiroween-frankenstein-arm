@@ -2,7 +2,7 @@
 
 **Type a sentence. Watch the arm do it.**
 
-A single-page static web app built for the [Kiroween 2026](https://kiro.dev) hackathon
+A single-page static web app built for the [Kiroween 2026](https://kiroween.devpost.com/) hackathon
 (Frankenstein track). You type one plain-English grasping instruction — "pick up the red
 cube and place it on the shelf" — and a simulated 4-DOF robot arm executes it in the
 browser. Joint angles and end-effector pose are computed from real forward/inverse
@@ -12,8 +12,8 @@ kinematics, not a canned animation.
 
 ## Live demo
 
-> **GitHub Pages:** `https://<your-username>.github.io/kiroween/`
-> *(Replace `<your-username>` with your GitHub handle after pushing to GitHub Pages.)*
+> **GitHub Pages:** `https://angyi-cmyk.github.io/kiroween-frankenstein-arm/`
+> *(Live once the repo is pushed and GitHub Pages is enabled on the `main` branch.)*
 
 ---
 
@@ -22,8 +22,8 @@ kinematics, not a canned animation.
 No build step, no server, no API keys required.
 
 ```bash
-git clone https://github.com/<your-username>/kiroween.git
-cd kiroween
+git clone https://github.com/angyi-cmyk/kiroween-frankenstein-arm.git
+cd kiroween-frankenstein-arm
 python3 -m http.server 8080
 # then open http://localhost:8080 in your browser
 ```

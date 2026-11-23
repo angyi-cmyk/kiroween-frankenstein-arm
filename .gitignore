@@ -21,6 +21,9 @@ build/
 *.log
 npm-debug.log*
 
+# Demo video (large binary, kept in the workspace only, not in git)
+demo-video/
+
 # Environment
 .env
 .env.local

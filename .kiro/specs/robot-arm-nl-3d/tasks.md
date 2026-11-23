@@ -6,7 +6,15 @@ so in the task's notes and keep the spec as the contract. Commit
 progress with git as you go (local commits; pushing needs GitHub auth
 which is not available in this environment).
 
-- [ ] 1. Scaffold the page and scene
+Status 2026-11-23: all tasks 1–8 implemented by the Kiro CLI agent
+(`kiro-cli chat --no-interactive`, session log `build-log-kiro-impl.txt`)
+and independently verified: 20/20 in-page self-tests pass, zero console
+errors, "Pick up the red cube and place it on the shelf" ends with the
+red cube at exactly (0.90, 0.56, 0.30). Two design errors found by the
+agent's numeric checks are corrected in design.md (see its Revisions
+section): pitch axis local X, grasp tip height 0.30 m.
+
+- [x] 1. Scaffold the page and scene
   - Create `index.html` with import map pinning `three@0.160.0` from
     unpkg and `three/addons/` → `examples/jsm/`.
   - Set up renderer (antialias, shadows), perspective camera with a
@@ -17,7 +25,7 @@ which is not available in this environment).
     labels (small floating name sprites or a legend in the UI).
   - _Requirements: 1.1, 1.2, 1.3, 7.1, 7.2_
 
-- [ ] 2. Build the arm model and FK
+- [x] 2. Build the arm model and FK
   - Build the 4-joint hierarchy from design.md (base yaw J0, shoulder
     J1, elbow J2, wrist J3; L1=0.75, L2=0.65, L3=0.25), with a
     two-finger gripper.
@@ -28,7 +36,7 @@ which is not available in this environment).
   - Verify FK vs scene-graph tip position agrees within 1 mm.
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
-- [ ] 3. Implement analytic IK
+- [x] 3. Implement analytic IK
   - Implement `inverseKinematics(target, gripPitch)` exactly as in
     design.md (yaw from bearing, wrist-centre offset by L3, two-link
     elbow-up solve, joint-limit checks, null when unreachable).
@@ -36,7 +44,7 @@ which is not available in this environment).
     objects and the shelf drop point.
   - _Requirements: 3.1, 3.2, 3.3_
 
-- [ ] 4. Implement the NL command parser
+- [x] 4. Implement the NL command parser
   - Implement the grammar from design.md: pick/grab forms, pick-and-
     place in one sentence, move/place forms, "place it…" with pronoun
     resolution, reset/home.
@@ -46,7 +54,7 @@ which is not available in this environment).
     clear parse-error message naming supported shapes.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
 
-- [ ] 5. Implement the pick–transport–place sequencer
+- [x] 5. Implement the pick–transport–place sequencer
   - Waypoint builder: approach → descend → close → lift → transit →
     descend → open → retreat, with IK at each waypoint and smoothstep
     joint interpolation scaled by joint delta.
@@ -55,7 +63,7 @@ which is not available in this environment).
   - Status line per phase; command queue; Stop and Reset buttons.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6_
 
-- [ ] 6. Build the UI
+- [x] 6. Build the UI
   - Header, command input + Run, at least 3 example chips, object
     legend, short instructions, English-only note, status line.
   - Readout bar (J0–J3, EE position, gripper, held object) updating
@@ -63,7 +71,7 @@ which is not available in this environment).
   - Dark clean styling, responsive under 760 px width.
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
-- [ ] 7. In-page self-test + local verification
+- [x] 7. In-page self-test + local verification
   - On load, run: FK vs scene graph (≤1 mm), IK round-trip on all
     targets (≤5 mm), parser cases for every grammar form plus one bad
     input. Show pass/fail in the UI self-test line and log to console.
@@ -74,7 +82,7 @@ which is not available in this environment).
     object ends on the target.
   - _Requirements: 1.3, 2.4, 3.3, 4.5_
 
-- [ ] 8. Repo docs
+- [x] 8. Repo docs
   - `README.md`: what the app is, live demo link placeholder (GitHub
     Pages URL), run locally, controls, how Kiro was used (specs +
     kiro-cli agent implementation), credits.

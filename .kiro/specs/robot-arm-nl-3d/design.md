@@ -8,6 +8,27 @@ through an import map (pinned version `0.160.0`); `OrbitControls` from
 the page: scene setup, arm model, kinematics, NL parser, animation
 sequencer, and UI wiring. No build step, no server, no keys.
 
+## Revisions (as-built, 2026-11-23)
+
+Two points in the first draft of this document were wrong and were
+corrected here after the Kiro agent's numeric verification (IK
+feasibility scans) proved them inconsistent with the spec's own IK
+math and reachability claim. The app was built to the corrected text:
+
+1. **Pitch joint axis is local X, not local Z.** With base yaw about
+   world Y, the reach direction is local +Z; a pitch about local Z
+   would tilt the arm sideways and the FK formula would not match the
+   scene graph. Rotation about local X is what tilts the arm toward
+   the table. The FK/IK math is unchanged.
+2. **Grasp tip height is 0.30 m, not "object top + 0.02" (0.24 m).**
+   At 0.24 m the green-cube and yellow-sphere grasps are infeasible
+   for every gripper pitch under the spec joint limits (by ~2–3°),
+   contradicting the design's own "all targets reachable" claim.
+   At 0.30 m all five objects are reachable at the exact spec limits.
+3. **Gripper pitch convention fixed:** φ is measured from vertical,
+   so straight down is φ = 180°, not −90° as first written. Grasps
+   use the feasible φ closest to 180°.
+
 ## Scene layout (units = metres, y up, table top at y = 0)
 
 - Table: 3.4 × 0.12 × 2.2 box, top at y = 0, centred at the origin.
@@ -39,15 +60,15 @@ J0 yaw ±170°, J1 shoulder −10°…+120°, J2 elbow −150°…0° (elbow-up
 configuration, negative = bent), J3 wrist −120°…+120°.
 
 Scene-graph structure (links extend along local +Y, pitch joints rotate
-about local Z, base yaw about world Y):
+about local X, base yaw about world Y):
 
 ```
 baseGroup (position 0,0,−0.75; rotation.y = J0)
- └ shoulderGroup (position 0,0.18,0; rotation.z = J1)
+ └ shoulderGroup (position 0,0.18,0; rotation.x = J1)
     └ upperArm mesh (box 0.13×0.75×0.13, centred y=+0.375)
-    └ elbowGroup (position 0,0.75,0; rotation.z = J2)
+    └ elbowGroup (position 0,0.75,0; rotation.x = J2)
        └ forearm mesh (box 0.11×0.65×0.11, centred y=+0.325)
-       └ wristGroup (position 0,0.65,0; rotation.z = J3)
+       └ wristGroup (position 0,0.65,0; rotation.x = J3)
           └ wrist mesh + gripperGroup (position 0,0.25,0)
              ├ fingerL / fingerR (translate ±x to open/close)
 ```
@@ -75,7 +96,10 @@ within 1 mm.
 
 Input: target tip position P (world) and desired gripper pitch
 `gripPitch` (angle of the gripper axis from vertical in the arm plane;
-−90° means pointing straight down for a grasp).
+φ = 0° is straight up, 90° is horizontal, 180° is straight down).
+Grasps use the feasible φ closest to 180° (a literal 180° needs
+J3 ≈ 150–158°, beyond the 120° wrist limit, so the gripper points
+down-and-slightly-forward).
 
 1. dx = P.x − S.x, dz = P.z − S.z, r = hypot(dx, dz).
    J0 = atan2(dx, dz), clamped to ±170°. (If r < 0.05 the yaw is
@@ -95,11 +119,10 @@ Input: target tip position P (world) and desired gripper pitch
    (unreachable) and let the UI report it.
 5. All angles are converted to degrees only for display.
 
-Grasp heights: approach point = target + 0.28 in y; grasp point =
-object top + 0.02 (cube: centre y + 0.11; cylinder: top y + 0.02;
-sphere: centre y + 0.11). Gripper points straight down (φ = −90°…
-i.e. gripper axis vertical) for grasps; for transit the wrist keeps
-the last orientation.
+Grasp heights: approach point = target + 0.28 in y; grasp tip height =
+0.30 m above the table (the gripper tip / palm plane; the object centre
+sits 0.19 m below the tip along the gripper axis when grasped). For
+transit the wrist keeps the last orientation.
 
 ## Natural-language parser
 
